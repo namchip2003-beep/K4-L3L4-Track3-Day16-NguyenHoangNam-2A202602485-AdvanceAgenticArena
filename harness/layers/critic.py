@@ -79,16 +79,39 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not claims or not isinstance(claims, list):
+            return report
+
+        new_claims = []
+        for claim in claims:
+            if not isinstance(claim, dict) or "text" not in claim or "doc_id" not in claim:
+                continue
+            text = claim["text"]
+            if ctx.saw(text):
+                new_claims.append(claim)
+            elif " và " in text:
+                halves = text.split(" và ", 1)
+                if len(halves) == 2:
+                    h1, h2 = halves
+                    d1, d2 = None, None
+                    for doc in ctx.corpus.docs:
+                        if h1 in doc.body and ctx.saw(h1):
+                            d1 = doc.doc_id
+                        if h2 in doc.body and ctx.saw(h2):
+                            d2 = doc.doc_id
+                    if d1 and d2 and d1 != d2:
+                        new_claims.append({"text": h1, "doc_id": d1})
+                        new_claims.append({"text": h2, "doc_id": d2})
+                        report["abstain"] = True
+
+        if not new_claims:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để đưa ra kết luận."
+        else:
+            report["claims"] = new_claims
+            report["citations"] = sorted(list(set(c["doc_id"] for c in new_claims)))
+
+        return report
